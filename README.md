@@ -107,16 +107,28 @@ Le frontend sera accessible à l'adresse indiquée par Vite, généralement : `h
 
 L’application nécessite une authentification. Il est possible de créer un compte de démonstration via la page d’inscription. Si vous voulez tester immédiatement :
 
-- Utilisez la page `Register` pour créer un compte client, commerçant et partenaire
-- Exemple de compte de test :
-  - Email : `test@smartchange.local`
-  - Mot de passe : `DemoSmart123!`
+## Utilisez la page se connecter entrant ces identifiant
 
-## Super-utilisateur Django (Admin)
+*Commerçant
+email : samlolo
+Mot de passe : sam9838*M
 
-http://localhost:5173/#/admin-login
-  - Email : `reine@gmail.com`
-  - Mot de passe : `sam9838*M`
+*Client
+
+email : soso
+Mot de passe : sam9838*M
+
+*Paternaire
+
+email : achille
+Mot de passe : sam9838*M
+
+
+
+
+
+
+
 
 ## Si vous voulez utilsez un autre super-utilisateur Django :
 
@@ -124,6 +136,7 @@ http://localhost:5173/#/admin-login
 cd frontend1/backend
 venv\Scripts\activate
 python manage.py createsuperuser
+python manage.py runserver
 ```
 
 ## Membres de l'équipe
