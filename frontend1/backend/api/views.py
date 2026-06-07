@@ -8,14 +8,16 @@ from decimal import Decimal
 from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
+from django.shortcuts import redirect, get_object_or_404
 from django.db.models import Count, Sum
 from django.contrib.auth import authenticate
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from .permissions import IsAdminRole
-from .models import User, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location
+from .models import User, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location, PartnerServiceRequest
 from .serializers import (
     UserSerializer,
     PartnerSerializer,
@@ -24,6 +26,8 @@ from .serializers import (
     WalletSerializer,
     TransactionSerializer,
     TransactionCreateSerializer,
+    PartnerServiceRequestSerializer,
+    PartnerServiceRequestCreateSerializer,
     QRScanSerializer,
     QRScanResultSerializer,
     DashboardSerializer,
@@ -35,6 +39,28 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
+
+class CustomerListAPIView(generics.ListAPIView):
+    """
+    Liste tous les clients (pour les commerçants/partenaires/administrateurs
+    """
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Filtrer les utilisateurs avec le rôle customer
+        qs = User.objects.filter(role='customer', statut='actif')
+        # Recherche par nom/email/téléphone si un paramètre search est passé
+        search = self.request.query_params.get('search', '')
+        if search:
+            qs = qs.filter(
+                prenom__icontains=search
+            ) | qs.filter(
+                nom__icontains=search
+            ) | qs.filter(
+                telephone__icontains=search
+            )
+        return qs
 
 
 class APIRootView(APIView):
@@ -49,6 +75,8 @@ class APIRootView(APIView):
                 'me': '/api/auth/me/',
                 'refresh': '/api/auth/refresh/',
                 'wallet': '/api/wallet/',
+                'wallet_withdraw': '/api/wallet/withdraw/',
+                'wallet_recharge': '/api/wallet/recharge/',
                 'transactions': '/api/transactions/',
                 'partners': '/api/partners/',
                 'dashboard': '/api/dashboard/',
@@ -75,10 +103,10 @@ class APIDocsView(APIView):
                 '/api/auth/refresh/': 'POST refresh token',
                 '/api/wallet/': 'GET authenticated user wallet',
                 '/api/wallet/withdraw/': 'POST withdraw wallet balance',
+                '/api/wallet/recharge/': 'POST/GET recharge wallet via Fadapay',
                 '/api/payments/initiate/': 'POST start a Fadadey payment',
                 '/api/transactions/': 'GET list or POST create a transaction',
                 '/api/partners/': 'GET active partners list',
-                '/api/payments/initiate/': 'POST start a Fadadey payment',
                 '/api/qr/scan/': 'POST scan a QR reference',
                 '/api/dashboard/': 'GET dashboard metrics',
                 '/api/admin/users/': 'GET all users (admin only)',
@@ -158,6 +186,122 @@ class PartnerListView(generics.ListAPIView):
         return queryset
 
 
+class PartnerServiceRequestView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return PartnerServiceRequestCreateSerializer
+        return PartnerServiceRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'merchant':
+            return PartnerServiceRequest.objects.filter(merchant=user).order_by('-created_at')
+        if user.role == 'partner':
+            return PartnerServiceRequest.objects.filter(partner=user).order_by('-created_at')
+        return PartnerServiceRequest.objects.none()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if user.role != 'merchant':
+            raise PermissionDenied('Seuls les commerçants peuvent demander un service partenaire.')
+
+        partner_id = self.request.data.get('partnerId')
+        if not partner_id:
+            raise ValidationError({'partnerId': 'Le partenaire est requis.'})
+
+        serializer.save()
+
+
+class PartnerServiceRequestAcceptView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        service_request = get_object_or_404(PartnerServiceRequest, request_id=request_id)
+        if request.user != service_request.partner:
+            raise PermissionDenied('Accès refusé.')
+        if service_request.statut != 'pending':
+            return Response({'detail': 'Cette demande ne peut pas être acceptée.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        service_request.statut = 'accepted'
+        service_request.save(update_fields=['statut', 'updated_at'])
+        return Response({'success': True, 'message': 'Demande acceptée avec succès.'})
+
+
+class PartnerServiceRequestCompleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, request_id):
+        service_request = get_object_or_404(PartnerServiceRequest, request_id=request_id)
+        if request.user != service_request.partner:
+            raise PermissionDenied('Accès refusé.')
+        if service_request.statut != 'accepted':
+            return Response({'detail': 'Cette demande doit d\'abord être acceptée.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        merchant_wallet = getattr(service_request.merchant, 'wallet', None)
+        if not merchant_wallet:
+            return Response({'detail': 'Wallet du commerçant introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        partner_wallet = getattr(service_request.partner, 'wallet', None)
+        if not partner_wallet:
+            return Response({'detail': 'Wallet du partenaire introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        commission = service_request.commission
+        montant_rembourse = service_request.montant_service
+        total_a_payer = montant_rembourse + commission
+
+        # Check if merchant can cover it (balance or debt)
+        debt_added = False
+        if merchant_wallet.balance < total_a_payer:
+            if not merchant_wallet.add_pending_debt(total_a_payer):
+                return Response(
+                    {
+                        'detail': 'Dette maximale atteinte. Veuillez recharger votre portefeuille avant de demander de nouveaux services.',
+                        'current_debt': merchant_wallet.pending_debt,
+                        'max_debt': merchant_wallet.max_allowed_debt
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            debt_added = True
+
+        # Create transaction first, then settle it!
+        transaction = Transaction.objects.create(
+            merchant=service_request.merchant,
+            partner=service_request.partner,
+            partner_location=service_request.partner_location,
+            customer=service_request.customer,
+            montant_achat=Decimal('0'),
+            montant_paye=Decimal('0'),
+            monnaie_a_rendre=montant_rembourse,
+            frais_service=commission,
+            statut='validee',
+            qr_code=f'SVC-{uuid.uuid4().hex[:12].upper()}',
+        )
+
+        CommissionRecord.objects.create(
+            transaction=transaction,
+            montant_commission=commission,
+            type_commission='partenaire',
+        )
+
+        # Settle transaction as partner service
+        transaction.settle(is_partner_service=True, merchant_wallet=merchant_wallet, partner_wallet=partner_wallet)
+
+        service_request.statut = 'completed'
+        service_request.completed_at = timezone.now()
+        service_request.save(update_fields=['statut', 'completed_at'])
+
+        return Response(
+            {
+                'success': True, 
+                'message': 'Service partenaire distribué et commission appliquée.',
+                'debt_added': debt_added,
+                'merchant_current_debt': merchant_wallet.pending_debt
+            }
+        )
+
+
 class WalletView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -221,6 +365,7 @@ class TransactionListCreateView(generics.ListCreateAPIView):
         top_locations = [loc for loc, _ in nearby_locations[:5]]
         
         # Sélectionner aléatoirement parmi les plus proches
+        partner = None
         if top_locations:
             selected_location = random.choice(top_locations)
             transaction = serializer.save(
@@ -228,6 +373,7 @@ class TransactionListCreateView(generics.ListCreateAPIView):
                 partner=selected_location.partner,
                 partner_location=selected_location
             )
+            partner = selected_location.partner
         else:
             # Fallback: partenaire aléatoire si aucune location proche
             partner = User.objects.filter(role='partner', statut='actif').order_by('?').first()
@@ -253,19 +399,55 @@ class TransactionListCreateView(generics.ListCreateAPIView):
             type_commission='plateforme',
         )
 
-        merchant_wallet = getattr(transaction.merchant, 'wallet', None)
-        if merchant_wallet:
-            merchant_wallet.balance_en_attente += merchant_share
-            merchant_wallet.revenus_generes += merchant_share
-            merchant_wallet.save(update_fields=['balance_en_attente', 'revenus_generes'])
+        # Si un client est sélectionné, valider immédiatement la transaction
+        if transaction.customer:
+            transaction.statut = 'validee'
+            transaction.save(update_fields=['statut'])
+            # La transaction.settle() sera appelée automatiquement par le signal post_save
+        else:
+            # Aucun client sélectionné, ajouter les parts aux wallets comme avant
+            merchant_wallet = getattr(transaction.merchant, 'wallet', None)
+            if merchant_wallet:
+                merchant_wallet.balance += merchant_share
+                merchant_wallet.revenus_generes += merchant_share
+                merchant_wallet.save(update_fields=['balance', 'revenus_generes'])
 
-        if partner and getattr(partner, 'wallet', None):
-            partner_wallet = partner.wallet
-            partner_wallet.balance_en_attente += partner_share
-            partner_wallet.revenus_generes += partner_share
-            partner_wallet.save(update_fields=['balance_en_attente', 'revenus_generes'])
+            if partner and getattr(partner, 'wallet', None):
+                partner_wallet = partner.wallet
+                partner_wallet.balance += partner_share
+                partner_wallet.revenus_generes += partner_share
+                partner_wallet.save(update_fields=['balance', 'revenus_generes'])
 
         return transaction
+
+
+class TransactionValidateView(APIView):
+    """Permet au client, commerçant ou partenaire de valider une transaction en attente"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, transaction_id):
+        user = request.user
+        transaction = get_object_or_404(Transaction, transaction_id=transaction_id)
+        
+        # Vérifier que l'utilisateur a le droit de valider cette transaction
+        if user.role == 'customer':
+            if transaction.customer != user:
+                return Response({'detail': 'Vous ne pouvez pas valider cette transaction.'}, status=status.HTTP_403_FORBIDDEN)
+        elif user.role == 'merchant':
+            if transaction.merchant != user:
+                return Response({'detail': 'Vous ne pouvez pas valider cette transaction.'}, status=status.HTTP_403_FORBIDDEN)
+        elif user.role == 'partner':
+            if transaction.partner != user:
+                return Response({'detail': 'Vous ne pouvez pas valider cette transaction.'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            return Response({'detail': 'Vous ne pouvez pas valider cette transaction.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if transaction.statut != 'en_attente':
+            return Response({'detail': 'Cette transaction ne peut pas être validée.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        transaction.statut = 'validee'
+        transaction.save(update_fields=['statut'])
+        return Response(TransactionSerializer(transaction).data)
 
 
 class WalletWithdrawView(APIView):
@@ -282,6 +464,185 @@ class WalletWithdrawView(APIView):
         wallet.balance = 0
         wallet.save(update_fields=['balance'])
         return Response({'success': True, 'withdrawn': montant_retirer, 'wallet': WalletSerializer(wallet).data})
+
+
+class WalletRechargeView(APIView):
+    """Recharger le portefeuille du commerçant via Fadapay"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _build_mock_payment_response(self, request, montant, currency, recharge_id):
+        payment_url = request.build_absolute_uri(
+            f'/api/wallet/recharge/verify/?recharge_id={recharge_id}&amount={int(montant)}&currency={currency}&user_id={request.user.id}&status=success&mock=true'
+        )
+        return Response({
+            'success': True,
+            'paymentUrl': payment_url,
+            'reference': f'mock-{recharge_id}',
+            'rechargeId': recharge_id,
+            'amount': str(montant),
+            'status': 'mocked',
+            'mock': True,
+            'message': 'Fadapay inaccessible. Recharge mock générée en mode debug.',
+        })
+
+    def post(self, request):
+        # Seuls les commerçants et partenaires peuvent recharger leur portefeuille
+        if request.user.role not in ['merchant', 'partner']:
+            return Response(
+                {'detail': 'Seuls les commerçants et partenaires peuvent recharger leur portefeuille.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        amount = request.data.get('amount')
+        currency = request.data.get('currency', 'XOF')
+        
+        if amount is None:
+            return Response({'detail': 'Le montant est requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            montant = Decimal(str(amount))
+        except Exception:
+            return Response({'detail': 'Montant invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if montant <= 0:
+            return Response({'detail': 'Le montant doit être supérieur à 0.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if montant > Decimal('1000000'):
+            return Response({'detail': 'Le montant dépasse la limite maximale.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        recharge_id = str(uuid.uuid4())
+        payload = {
+            'amount': int(montant * 100),
+            'currency': currency,
+            'customer': {
+                'email': request.user.email,
+                'firstname': request.user.prenom or '',
+                'lastname': request.user.nom or '',
+            },
+            'metadata': {
+                'recharge_id': recharge_id,
+                'user_id': request.user.id,
+                'user_role': request.user.role,
+                'type': 'wallet_recharge',
+            },
+            'redirect_url': request.build_absolute_uri('/api/wallet/recharge/verify/'),
+        }
+
+        url = f"{settings.FADADEY_API_BASE_URL.rstrip('/')}/payments"
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {settings.FADADEY_SECRET_KEY}',
+            'X-Public-Key': settings.FADADEY_PUBLIC_KEY,
+        }
+
+        use_mock = getattr(settings, 'FADADEY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
+
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=25) as response:
+                response_data = json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode('utf-8') if hasattr(error, 'read') else ''
+            logger.error(f"Fadapay error for wallet recharge: {body}")
+            if use_mock:
+                return self._build_mock_payment_response(request, montant, currency, recharge_id)
+            return Response(
+                {'detail': 'Impossible de lancer la recharge du portefeuille.', 'error': body},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+        except urllib.error.URLError as error:
+            logger.error(f"Connection error to Fadapay: {str(error)}")
+            if use_mock:
+                return self._build_mock_payment_response(request, montant, currency, recharge_id)
+            return Response(
+                {'detail': 'Erreur de connexion à Fadapay.', 'error': str(error)},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+        except Exception as error:
+            logger.error(f"Unexpected error while connecting to Fadapay: {str(error)}")
+            if use_mock:
+                return self._build_mock_payment_response(request, montant, currency, recharge_id)
+            return Response(
+                {'detail': 'Erreur interne lors de la connexion à Fadapay.', 'error': str(error)},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        payment_url = response_data.get('payment_url') or response_data.get('url') or response_data.get('link')
+        
+        logger.info(f"Wallet recharge initiated for user {request.user.id}, amount: {montant}, recharge_id: {recharge_id}")
+        
+        return Response({
+            'success': True,
+            'paymentUrl': payment_url,
+            'reference': response_data.get('reference') or response_data.get('id'),
+            'rechargeId': recharge_id,
+            'amount': str(montant),
+            'status': response_data.get('status') or 'pending',
+        })
+
+    def get(self, request):
+        """Récupérer l'état de recharge du portefeuille"""
+        wallet = getattr(request.user, 'wallet', None)
+        if not wallet:
+            return Response(
+                {'detail': 'Portefeuille introuvable.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        return Response({
+            'balance': str(wallet.balance),
+            'pending_debt': str(wallet.pending_debt),
+            'revenus_generes': str(wallet.revenus_generes),
+            'created_at': wallet.created_at,
+        })
+
+
+class WalletRechargeVerifyView(APIView):
+    """Validation basique de recharge pour les tests locaux."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        recharge_id = request.GET.get('recharge_id')
+        amount = request.GET.get('amount')
+        currency = request.GET.get('currency', 'XOF')
+        status_value = request.GET.get('status', 'success')
+        mock_mode = request.GET.get('mock', 'false').lower() in ['1', 'true', 'yes']
+
+        if not recharge_id or not amount:
+            return Response({'detail': 'Paramètres manquants pour la validation de recharge.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            montant = Decimal(str(amount))
+        except Exception:
+            return Response({'detail': 'Montant invalide pour la validation de recharge.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if status_value != 'success':
+            return Response({'success': False, 'message': 'Recharge non complétée.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.is_authenticated:
+            user = request.user
+        elif mock_mode:
+            user_id = request.GET.get('user_id')
+            if not user_id:
+                return Response({'detail': 'Utilisateur introuvable pour la validation mock.'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                user = User.objects.get(id=user_id)
+            except User.DoesNotExist:
+                return Response({'detail': 'Utilisateur mock introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            return Response({'detail': 'Authentification requise pour valider la recharge.'}, status=status.HTTP_403_FORBIDDEN)
+
+        wallet = getattr(user, 'wallet', None)
+        if not wallet:
+            return Response({'detail': 'Portefeuille introuvable pour l’utilisateur.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Add balance and pay off pending debt first!
+        new_balance, debt_paid, remaining_balance = wallet.add_balance_and_pay_debt(montant)
+        
+        logger.info(f"Mock recharge validated for user {user.id}, amount: {montant}, debt_paid: {debt_paid}, recharge_id: {recharge_id}")
+
+        # Rediriger vers le frontend (page portefeuille) avec indicateur de succès
+        return redirect(f'http://localhost:5173/?tab=wallet&recharge_success=true&amount={int(montant)}')
 
 
 class PaymentInitiateView(APIView):
@@ -379,26 +740,8 @@ class QRScanView(APIView):
 
         transaction.statut = 'validee'
         transaction.save(update_fields=['statut'])
-        self._settle_transaction(transaction)
+        # The post_save signal will automatically call transaction.settle()
         return Response({'status': 'valid', 'message': 'QR Code valide.', 'reference': reference, 'montant': transaction.monnaie_a_rendre, 'expiration': expiration, 'isFraud': False})
-
-    def _settle_transaction(self, transaction):
-        merchant_wallet = getattr(transaction.merchant, 'wallet', None)
-        partner_wallet = getattr(transaction.partner, 'wallet', None) if transaction.partner else None
-        merchant_net = max(transaction.monnaie_a_rendre - (transaction.frais_service * Decimal('0.5')), Decimal('0'))
-        partner_share = transaction.frais_service * Decimal('0.25')
-
-        if merchant_wallet:
-            merchant_wallet.balance += merchant_net
-            merchant_wallet.balance_en_attente = max(merchant_wallet.balance_en_attente - (transaction.frais_service * Decimal('0.25')), Decimal('0'))
-            merchant_wallet.revenus_generes += transaction.frais_service * Decimal('0.25')
-            merchant_wallet.save(update_fields=['balance', 'balance_en_attente', 'revenus_generes'])
-
-        if partner_wallet:
-            partner_wallet.balance += partner_share
-            partner_wallet.balance_en_attente = max(partner_wallet.balance_en_attente - partner_share, Decimal('0'))
-            partner_wallet.revenus_generes += partner_share
-            partner_wallet.save(update_fields=['balance', 'balance_en_attente', 'revenus_generes'])
 
 
 class DashboardView(APIView):
@@ -664,6 +1007,11 @@ class SeedTestUsersView(APIView):
                 user.save()
                 existing.append(data['email'])
                 logger.info(f"Updated test user: {data['email']}")
+            # Ensure wallet exists and add test balance for merchant
+            wallet, wallet_created = Wallet.objects.get_or_create(user=user)
+            if data['role'] == 'merchant' and wallet.balance < 1000:
+                wallet.balance = 1000
+                wallet.save()
         
         return Response({
             'success': True,
@@ -676,3 +1024,18 @@ class SeedTestUsersView(APIView):
                 {'email': 'partner@demo.local', 'password': 'Demo123!@', 'role': 'partner'},
             ]
         })
+
+
+class DebugAddBalanceView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        """Add test balance to user's wallet (for development)"""
+        wallet = getattr(request.user, 'wallet', None)
+        if not wallet:
+            return Response({'detail': 'Wallet introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+        add_amount = request.data.get('amount', 100)
+        wallet.balance += add_amount
+        wallet.save(update_fields=['balance'])
+        serializer = WalletSerializer(wallet)
+        return Response({'success': True, 'message': f'Ajout de {add_amount}F au solde.', 'wallet': serializer.data})

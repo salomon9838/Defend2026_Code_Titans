@@ -9,6 +9,8 @@ from .models import (
     QRCodeRecord,
     FraudReport,
     CommissionRecord,
+    Location,
+    PartnerServiceRequest,
 )
 
 
@@ -17,7 +19,7 @@ class WalletInline(admin.StackedInline):
     can_delete = False
     verbose_name_plural = 'Wallet'
     fk_name = 'user'
-    readonly_fields = ('balance', 'balance_en_attente', 'revenus_generes', 'created_at')
+    readonly_fields = ('balance', 'pending_debt', 'max_allowed_debt', 'revenus_generes', 'created_at')
 
 
 class UserAdmin(BaseUserAdmin):
@@ -47,6 +49,7 @@ class UserAdmin(BaseUserAdmin):
                 'adresse',
                 'latitude',
                 'longitude',
+                'horaires',
             )
         }),
         (_('Permissions'), {
@@ -85,7 +88,7 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ('user', 'balance', 'balance_en_attente', 'revenus_generes', 'created_at')
+    list_display = ('user', 'balance', 'pending_debt', 'max_allowed_debt', 'revenus_generes', 'created_at')
     search_fields = ('user__email', 'user__nom', 'user__prenom')
     readonly_fields = ('created_at',)
 
@@ -135,6 +138,22 @@ class CommissionRecordAdmin(admin.ModelAdmin):
     list_filter = ('type_commission', 'date_commission')
     search_fields = ('transaction__transaction_id',)
     readonly_fields = ('date_commission',)
+
+
+@admin.register(Location)
+class LocationAdmin(admin.ModelAdmin):
+    list_display = ('nom', 'partner', 'adresse', 'statut', 'created_at')
+    list_filter = ('statut', 'created_at')
+    search_fields = ('nom', 'adresse', 'partner__email', 'partner__nom')
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(PartnerServiceRequest)
+class PartnerServiceRequestAdmin(admin.ModelAdmin):
+    list_display = ('request_id', 'merchant', 'partner', 'statut', 'created_at')
+    list_filter = ('statut', 'created_at')
+    search_fields = ('request_id', 'merchant__email', 'partner__email')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 admin.site.register(User, UserAdmin)

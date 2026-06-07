@@ -26,6 +26,12 @@ const LoginPage: React.FC = () => {
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [registerError, setRegisterError] = useState('');
   const [registerLoading, setRegisterLoading] = useState(false);
+  // Partner-specific fields
+  const [nomBoutique, setNomBoutique] = useState('');
+  const [adresse, setAdresse] = useState('');
+  const [latitude, setLatitude] = useState('');
+  const [longitude, setLongitude] = useState('');
+  const [horaires, setHoraires] = useState('08:00-18:00');
 
   // OTP state
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -95,7 +101,15 @@ const LoginPage: React.FC = () => {
 
   const handleOtpValidate = async (_code: string) => {
     setOtpLoading(true);
-    const result = await register({ nom, prenom, telephone, email, password, role });
+    const registerData: any = { nom, prenom, telephone, email, password, role };
+    if (role === 'partner' || role === 'merchant') {
+      registerData.nom_boutique = nomBoutique;
+      registerData.adresse = adresse;
+      if (latitude) registerData.latitude = parseFloat(latitude);
+      if (longitude) registerData.longitude = parseFloat(longitude);
+      registerData.horaires = horaires;
+    }
+    const result = await register(registerData);
     setOtpLoading(false);
     if (!result.success) {
       setRegisterError(result.error || 'Erreur.');
@@ -248,6 +262,34 @@ const LoginPage: React.FC = () => {
                   <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vous@exemple.com" style={{ paddingLeft: 44 }} required />
                 </div>
               </div>
+
+              {/* Partner/Merchant specific fields */}
+              {(role === 'partner' || role === 'merchant') && (
+                <>
+                  <div className="input-group">
+                    <label className="input-label">Nom de la boutique</label>
+                    <input className="input" value={nomBoutique} onChange={e => setNomBoutique(e.target.value)} placeholder="Boutique du Coin" required />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">Adresse</label>
+                    <input className="input" value={adresse} onChange={e => setAdresse(e.target.value)} placeholder="Rue du Commerce, Lomé" required />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div className="input-group">
+                      <label className="input-label">Latitude</label>
+                      <input className="input" type="number" step="0.0001" value={latitude} onChange={e => setLatitude(e.target.value)} placeholder="6.1400" />
+                    </div>
+                    <div className="input-group">
+                      <label className="input-label">Longitude</label>
+                      <input className="input" type="number" step="0.0001" value={longitude} onChange={e => setLongitude(e.target.value)} placeholder="1.2100" />
+                    </div>
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">Horaires d'ouverture</label>
+                    <input className="input" value={horaires} onChange={e => setHoraires(e.target.value)} placeholder="08:00-18:00" />
+                  </div>
+                </>
+              )}
 
               <div className="input-group">
                 <label className="input-label">Mot de passe</label>

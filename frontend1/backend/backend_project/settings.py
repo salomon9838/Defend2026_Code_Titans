@@ -106,10 +106,17 @@ SIMPLE_JWT = {
 FADADEY_PUBLIC_KEY = os.environ.get('FADADEY_PUBLIC_KEY', 'pk_sandbox_TFz2t9o5UhnfV9DAUdk4QulL')
 FADADEY_SECRET_KEY = os.environ.get('FADADEY_SECRET_KEY', 'sk_sandbox_nC8owJa_FQAaQMsBhxOBRWQv')
 FADADEY_API_BASE_URL = os.environ.get('FADADEY_API_BASE_URL', 'https://sandbox.fadadey.com')
+FADADEY_USE_MOCK = os.environ.get('FADADEY_USE_MOCK', 'False').lower() in ('1', 'true', 'yes')
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https?://localhost(:[0-9]+)?$',
+    r'^https?://127\.0\.0\.1(:[0-9]+)?$',
 ]
 CORS_ALLOW_CREDENTIALS = True

@@ -85,7 +85,7 @@ const AppContent: React.FC = () => {
     switch (activePage) {
       case 'dashboard':         return <DashboardPage onNavigate={handleNavigate} />;
       case 'transaction':       return <TransactionPage />;
-      case 'wallet':            return <WalletPage />;
+      case 'wallet':            return <WalletPage onNavigate={handleNavigate} />;
       case 'history':           return <HistoryPage />;
       case 'geolocation':       return <GeolocationPage />;
       case 'admin-dashboard':

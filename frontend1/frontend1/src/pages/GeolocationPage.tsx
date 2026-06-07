@@ -1,14 +1,47 @@
 import React, { useEffect, useState } from 'react';
-import { MapPin, Navigation, Clock, Phone, Star, Search } from 'lucide-react';
-import type { PartnerShop } from '../types';
-import { getPartners } from '../api';
+import { MapPin, Navigation, Clock, Phone, Star, Search, User } from 'lucide-react';
+import type { PartnerLocation, PartnerShop, User as UserType } from '../types';
+import { getPartnerLocations, getPartners, requestPartnerService, getCustomers } from '../api';
 
 const GeolocationPage: React.FC = () => {
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [showMap, setShowMap] = useState(true);
   const [partners, setPartners] = useState<PartnerShop[]>([]);
+  const [partnerLocations, setPartnerLocations] = useState<PartnerLocation[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+  const [requestMessage, setRequestMessage] = useState<string | null>(null);
+  // Customer selection
+  const [customers, setCustomers] = useState<UserType[]>([]);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<UserType | null>(null);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
+  // Client identifier fields
+  const [clientMontant, setClientMontant] = useState('');
+
+  useEffect(() => {
+    const loadCustomers = async () => {
+      if (!customerSearch) {
+        setCustomers([]);
+        return;
+      }
+      setSearchingCustomers(true);
+      try {
+        const data = await getCustomers(customerSearch);
+        setCustomers(data);
+      } catch (e) {
+        console.error('Erreur chargement clients', e);
+      } finally {
+        setSearchingCustomers(false);
+      }
+    };
+
+    const timer = setTimeout(() => loadCustomers(), 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch]);
 
   useEffect(() => {
     const loadPartners = async () => {
@@ -30,6 +63,57 @@ const GeolocationPage: React.FC = () => {
     p.adresse?.toLowerCase().includes(search.toLowerCase())
   );
   const selectedPartner = partners.find(p => p.id === selected);
+
+  useEffect(() => {
+    if (!selectedPartner) {
+      setPartnerLocations([]);
+      setSelectedLocationId(null);
+      return;
+    }
+
+    const loadLocations = async () => {
+      setLocationsLoading(true);
+      try {
+        const locations = await getPartnerLocations(String(selectedPartner.id));
+        setPartnerLocations(locations);
+        setSelectedLocationId(locations.length ? String(locations[0].id) : null);
+      } catch (error) {
+        console.error('Impossible de charger les emplacements du partenaire', error);
+        setPartnerLocations([]);
+        setSelectedLocationId(null);
+      } finally {
+        setLocationsLoading(false);
+      }
+    };
+
+    loadLocations();
+  }, [selectedPartner]);
+
+  const handleRequestService = async () => {
+    if (!selectedPartner) return;
+    setRequesting(true);
+    setRequestMessage(null);
+
+    try {
+      await requestPartnerService({
+        partnerId: String(selectedPartner.id),
+        partnerLocationId: selectedLocationId ? Number(selectedLocationId) : undefined,
+        montantService: clientMontant ? parseFloat(clientMontant) : 25,
+        commission: 25,
+        clientIdentifier: selectedCustomer ? `${selectedCustomer.prenom} ${selectedCustomer.nom}` : 'Client anonyme',
+        customerId: selectedCustomer?.id ? Number(selectedCustomer.id) : undefined,
+      });
+      setRequestMessage('Demande envoyée au partenaire.');
+      // Reset fields
+      setSelectedCustomer(null);
+      setCustomerSearch('');
+      setClientMontant('');
+    } catch (error: any) {
+      setRequestMessage(error.message || 'Erreur lors de l\'envoi de la demande.');
+    } finally {
+      setRequesting(false);
+    }
+  };
 
   return (
     <div style={{ animation: 'fadeUp 0.4s ease' }}>
@@ -123,7 +207,7 @@ const GeolocationPage: React.FC = () => {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: 'var(--warning)' }}><Star size={10} fill="currentColor" />4.8</span>
               </div>
               {selected === partner.id && (
-                <div style={{ marginTop: 10, display: 'flex', gap: 7 }}>
+                <div style={{ marginTop: 10, display: 'flex', gap: 7, flexWrap: 'wrap' }}>
                   <a
                     href={`https://maps.google.com/?q=${partner.latitude},${partner.longitude}`}
                     target="_blank"
@@ -137,6 +221,148 @@ const GeolocationPage: React.FC = () => {
                   <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={e => e.stopPropagation()}>
                     <Phone size={12} /> Appeler
                   </button>
+                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                    {locationsLoading ? (
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Chargement des emplacements...</div>
+                    ) : partnerLocations.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <label htmlFor="partner-location" style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>
+                          Lieu de retrait
+                        </label>
+                        <select
+                          id="partner-location"
+                          className="input"
+                          value={selectedLocationId ?? ''}
+                          onChange={e => setSelectedLocationId(e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                          onKeyDown={e => e.stopPropagation()}
+                          style={{ width: '100%' }}
+                        >
+                          {partnerLocations.map(location => (
+                            <option key={location.id} value={location.id}>
+                              {location.nom} — {location.adresse}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Aucun emplacement de partenaire détecté, la demande sera envoyée sans lieu spécifique.</div>
+                    )}
+
+                    {/* Client selection */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700, color: 'var(--text-muted)' }}>
+                        <User size={14} />
+                        Sélectionner le client
+                      </div>
+                      {selectedCustomer ? (
+                        <div style={{
+                          background: 'var(--bg-surface)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: 10,
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          border: '1px solid var(--border-bright)'
+                        }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontWeight: 700, fontSize: 13 }}>{selectedCustomer.prenom} {selectedCustomer.nom}</span>
+                            <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{selectedCustomer.telephone}</span>
+                          </div>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={e => { e.stopPropagation(); setSelectedCustomer(null); }}
+                            style={{ padding: '4px 8px', fontSize: 11 }}
+                          >
+                            Retirer
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <div style={{ position: 'relative' }}>
+                            <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                            <input
+                              className="input"
+                              type="text"
+                              value={customerSearch}
+                              onChange={e => setCustomerSearch(e.target.value)}
+                              placeholder="Rechercher client..."
+                              style={{ paddingLeft: 36 }}
+                              onClick={e => e.stopPropagation()}
+                              onKeyDown={e => e.stopPropagation()}
+                            />
+                          </div>
+                          {searchingCustomers && (
+                            <div style={{ padding: 6, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+                              <div className="spinner" style={{ width: 14, height: 14 }} />
+                              Recherche...
+                            </div>
+                          )}
+                          {customers.length > 0 && !searchingCustomers && (
+                            <div style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 'var(--radius-sm)',
+                              background: 'white',
+                              maxHeight: 150,
+                              overflowY: 'auto',
+                              zIndex: 20
+                            }}>
+                              {customers.map(customer => (
+                                <div
+                                  key={customer.id}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setSelectedCustomer(customer);
+                                    setCustomerSearch('');
+                                    setCustomers([]);
+                                  }}
+                                  style={{
+                                    padding: '8px 12px',
+                                    cursor: 'pointer',
+                                    borderBottom: '1px solid var(--border)',
+                                    transition: 'background 0.2s'
+                                  }}
+                                  onMouseOver={(e) => (e.currentTarget.style.background = 'var(--bg-surface)')}
+                                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                                >
+                                  <div style={{ fontWeight: 600, fontSize: 12 }}>{customer.prenom} {customer.nom}</div>
+                                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{customer.telephone}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>Montant à distribuer (F) <span style={{ color: 'var(--warning)', fontWeight: '600' }}>(Maximum 250 F)</span></label>
+                      <input 
+                        className="input" 
+                        type="number" 
+                        value={clientMontant} 
+                        onChange={e => {
+                          const val = e.target.value;
+                          if (!val || (Number(val) > 0 && Number(val) <= 250)) {
+                            setClientMontant(val);
+                          }
+                        }} 
+                        onClick={e => e.stopPropagation()} 
+                        onKeyDown={e => e.stopPropagation()} 
+                        placeholder="25" 
+                        min="1" 
+                        max="250" 
+                      />
+                    </div>
+
+                    <button
+                      className="btn btn-success btn-sm"
+                      style={{ justifyContent: 'center' }}
+                      onClick={e => { e.stopPropagation(); handleRequestService(); }}
+                      disabled={requesting}
+                    >
+                      {requesting ? 'Envoi...' : 'Demander cette distribution'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -205,6 +431,11 @@ const GeolocationPage: React.FC = () => {
           )}
         </div>
       </div>
+      {requestMessage && (
+        <div style={{ marginTop: 18, padding: 14, borderRadius: 12, background: '#141a28', border: '1px solid var(--border)', color: 'var(--text)', maxWidth: 680 }}>
+          {requestMessage}
+        </div>
+      )}
     </div>
   );
 };

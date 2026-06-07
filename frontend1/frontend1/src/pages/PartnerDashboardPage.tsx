@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, CheckCircle, Clock, ArrowUpRight, Coins } from 'lucide-react';
+import { TrendingUp, TrendingDown, CheckCircle, Clock, ArrowUpRight, Coins, MapPin, Phone } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { getDashboardStats, getTransactions } from '../api';
-import type { DashboardStats, Transaction } from '../types';
+import { getDashboardStats, getPartnerServiceRequests, acceptPartnerServiceRequest, completePartnerServiceRequest, getTransactions } from '../api';
+import { useAuth } from '../context/AuthContext';
+import type { DashboardStats, Transaction, PartnerServiceRequest } from '../types';
 
 const partnerChartDataFallback = [
   { jour: 'Lun', remboursements: 620, commissions: 12 },
@@ -62,19 +63,39 @@ const StatCard: React.FC<{
 const PartnerDashboardPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [serviceRequests, setServiceRequests] = useState<PartnerServiceRequest[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const { user } = useAuth();
+
+  const loadPartnerData = async () => {
+    setLoadingRequests(true);
+    try {
+      const [dashboardData, txData, requestsData] = await Promise.all([
+        getDashboardStats(),
+        getTransactions(),
+        getPartnerServiceRequests(),
+      ]);
+      setStats(dashboardData);
+      setTransactions(txData);
+      setServiceRequests(requestsData);
+    } catch (error) {
+      console.error('Erreur chargement partenaire', error);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
 
   useEffect(() => {
-    async function loadPartnerData() {
-      try {
-        const [dashboardData, txData] = await Promise.all([getDashboardStats(), getTransactions()]);
-        setStats(dashboardData);
-        setTransactions(txData);
-      } catch (error) {
-        console.error('Erreur chargement partenaire', error);
-      }
-    }
     loadPartnerData();
   }, []);
+
+  useEffect(() => {
+    if (user?.role === 'partner') {
+      loadPartnerData();
+    }
+  }, [user]);
 
   const chartData = transactions.length > 0
     ? transactions.slice(-7).map((tx, index) => ({
@@ -92,6 +113,8 @@ const PartnerDashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
     statut: tx.statut,
   }));
 
+  const pendingRequests = serviceRequests.filter(r => r.statut === 'pending' || r.statut === 'accepted');
+
   const partnerStats = {
     monnaieRemboursee: stats?.monnaieRecuperee ?? 0,
     commissionsGagnees: stats?.revenusJour ?? 0,
@@ -99,6 +122,30 @@ const PartnerDashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
     transactionsValidees: transactions.filter(tx => tx.statut === 'validee').length,
     transactionsEnAttente: transactions.filter(tx => tx.statut === 'en_attente').length,
     transactionsTotal: transactions.length,
+  };
+
+  const handleAcceptService = async (requestId: string) => {
+    setAcceptingId(requestId);
+    try {
+      await acceptPartnerServiceRequest(requestId);
+      setServiceRequests(prev => prev.map(r => r.requestId === requestId ? { ...r, statut: 'accepted' } : r));
+    } catch (error) {
+      console.error('Erreur d\'acceptation du service partenaire', error);
+    } finally {
+      setAcceptingId(null);
+    }
+  };
+
+  const handleCompleteService = async (requestId: string) => {
+    setCompletingId(requestId);
+    try {
+      await completePartnerServiceRequest(requestId);
+      await loadPartnerData();
+    } catch (error) {
+      console.error('Erreur de complétion du service partenaire', error);
+    } finally {
+      setCompletingId(null);
+    }
   };
 
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -126,6 +173,59 @@ const PartnerDashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
           <CheckCircle size={14} /> Scanner un QR Code
         </button>
       </div>
+
+      {user?.role === 'partner' && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Demandes de service en attente</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Traitez les demandes de distribution envoyées par les commerçants.</div>
+            </div>
+          </div>
+          {loadingRequests ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Chargement des demandes…</div>
+          ) : pendingRequests.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Aucune demande de service en attente.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 12 }}>
+              {pendingRequests.map(request => (
+                <div key={request.requestId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, background: 'var(--bg-surface)' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700 }}>{request.merchantName}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{request.clientIdentifier || 'Client anonyme'}</div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>Service: {request.montantService} F • Commission: {request.commission} F</div>
+                    {request.partnerLocationName && (
+                      <div style={{ marginTop: 2, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}>
+                        <MapPin size={12} /> {request.partnerLocationName}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                    {request.statut === 'pending' && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={acceptingId === request.requestId}
+                        onClick={() => handleAcceptService(request.requestId)}
+                      >
+                        {acceptingId === request.requestId ? 'Acceptation...' : 'Accepter'}
+                      </button>
+                    )}
+                    {request.statut === 'accepted' && (
+                      <button
+                        className="btn btn-success btn-sm"
+                        disabled={completingId === request.requestId}
+                        onClick={() => handleCompleteService(request.requestId)}
+                      >
+                        {completingId === request.requestId ? 'Validation...' : 'Clôturer'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stats grid — 2 cols mobile, 4 desktop */}
       <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>

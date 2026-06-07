@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowRight, QrCode, CheckCircle, Download, Share2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ArrowRight, QrCode, CheckCircle, Download, Share2, RefreshCw, AlertTriangle, Search, User } from 'lucide-react';
 import QRCodeLib from 'qrcode';
-import { createTransaction, initiatePayment } from '../api';
-import type { Transaction } from '../types';
+import { createTransaction, initiatePayment, getCustomers } from '../api';
+import type { Transaction, User as UserType } from '../types';
 
 type Step = 'form' | 'confirm' | 'qr' | 'success';
 
@@ -17,7 +17,32 @@ const TransactionPage: React.FC = () => {
   const [createdTransaction, setCreatedTransaction] = useState<Transaction | null>(null);
   const [showFraudWarning, setShowFraudWarning] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState('');
+  const [customers, setCustomers] = useState<UserType[]>([]);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<UserType | null>(null);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
   const fraisService = 20;
+
+  useEffect(() => {
+    const loadCustomers = async () => {
+      if (!customerSearch) {
+        setCustomers([]);
+        return;
+      }
+      setSearchingCustomers(true);
+      try {
+        const data = await getCustomers(customerSearch);
+        setCustomers(data);
+      } catch (e) {
+        console.error('Erreur chargement clients', e);
+      } finally {
+        setSearchingCustomers(false);
+      }
+    };
+
+    const timer = setTimeout(() => loadCustomers(), 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch]);
 
   useEffect(() => {
     const a = parseFloat(montantAchat) || 0;
@@ -38,6 +63,7 @@ const TransactionPage: React.FC = () => {
         montantAchat: parseFloat(montantAchat) || 0,
         montantPaye: parseFloat(montantPaye) || 0,
         fraisService,
+        customerId: selectedCustomer?.id ? Number(selectedCustomer.id) : undefined,
       });
       setCreatedTransaction(response);
       setTransactionId(response.transactionId);
@@ -138,6 +164,90 @@ const TransactionPage: React.FC = () => {
                   onChange={e => setMontantPaye(e.target.value)} placeholder="1000"
                   style={{ fontSize: 17, fontWeight: 600, fontFamily: 'var(--font-display)' }} />
               </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+              <div style={{ fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                <User size={16} />
+                Sélectionner le client (optionnel)
+              </div>
+              {selectedCustomer ? (
+                <div style={{
+                  background: 'var(--bg-surface)',
+                  borderRadius: 'var(--radius)',
+                  padding: 12,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  border: '1px solid var(--border-bright)'
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{selectedCustomer.prenom} {selectedCustomer.nom}</span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{selectedCustomer.telephone}</span>
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setSelectedCustomer(null)}
+                    style={{ padding: '6px 10px', fontSize: 12 }}
+                  >
+                    Retirer
+                  </button>
+                </div>
+              ) : (
+                <div className="input-group" style={{ marginBottom: 0 }}>
+                  <label className="input-label">Rechercher un client</label>
+                  <div style={{ position: 'relative' }}>
+                    <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      className="input"
+                      type="text"
+                      value={customerSearch}
+                      onChange={e => setCustomerSearch(e.target.value)}
+                      placeholder="Nom, prénom ou téléphone"
+                      style={{ paddingLeft: 40 }}
+                    />
+                  </div>
+                  {searchingCustomers && (
+                    <div style={{ padding: 8, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+                      <div className="spinner" style={{ width: 16, height: 16 }} />
+                      Recherche...
+                    </div>
+                  )}
+                  {customers.length > 0 && !searchingCustomers && (
+                    <div style={{
+                      marginTop: 8,
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'white',
+                      maxHeight: 200,
+                      overflowY: 'auto',
+                      zIndex: 10
+                    }}>
+                      {customers.map(customer => (
+                        <div
+                          key={customer.id}
+                          onClick={() => {
+                            setSelectedCustomer(customer);
+                            setCustomerSearch('');
+                            setCustomers([]);
+                          }}
+                          style={{
+                            padding: '10px 14px',
+                            cursor: 'pointer',
+                            borderBottom: '1px solid var(--border)',
+                            transition: 'background 0.2s'
+                          }}
+                          onMouseOver={(e) => (e.currentTarget.style.background = 'var(--bg-surface)')}
+                          onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>{customer.prenom} {customer.nom}</div>
+                          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{customer.telephone}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {monnaie > 0 && (

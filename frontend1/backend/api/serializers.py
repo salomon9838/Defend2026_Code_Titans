@@ -3,7 +3,7 @@ import math
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import serializers
-from .models import User, Wallet, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location
+from .models import User, Wallet, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location, PartnerServiceRequest
 
 def normalize_phone(value):
     if value is None:
@@ -66,6 +66,11 @@ class RegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES)
+    nom_boutique = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    adresse = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    latitude = serializers.FloatField(required=False, allow_null=True)
+    longitude = serializers.FloatField(required=False, allow_null=True)
+    horaires = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
@@ -89,6 +94,11 @@ class RegisterSerializer(serializers.Serializer):
             nom=validated_data['nom'],
             prenom=validated_data['prenom'],
             role=validated_data['role'],
+            nom_boutique=validated_data.get('nom_boutique', ''),
+            adresse=validated_data.get('adresse', ''),
+            latitude=validated_data.get('latitude'),
+            longitude=validated_data.get('longitude'),
+            horaires=validated_data.get('horaires', '9h-18h'),
             is_staff=(validated_data['role'] == 'admin'),
         )
         return user
@@ -151,12 +161,13 @@ class LoginSerializer(serializers.Serializer):
 
 class WalletSerializer(serializers.ModelSerializer):
     walletId = serializers.CharField(source='id')
-    balanceEnAttente = serializers.DecimalField(source='balance_en_attente', max_digits=12, decimal_places=2)
+    pendingDebt = serializers.DecimalField(source='pending_debt', max_digits=12, decimal_places=2)
+    maxAllowedDebt = serializers.DecimalField(source='max_allowed_debt', max_digits=12, decimal_places=2)
     revenusGeneres = serializers.DecimalField(source='revenus_generes', max_digits=12, decimal_places=2)
 
     class Meta:
         model = Wallet
-        fields = ['walletId', 'balance', 'balanceEnAttente', 'revenusGeneres', 'created_at']
+        fields = ['walletId', 'balance', 'pendingDebt', 'maxAllowedDebt', 'revenusGeneres', 'created_at']
 
 
 class TransactionSerializer(serializers.ModelSerializer):
@@ -200,10 +211,19 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
     fraisService = serializers.DecimalField(source='frais_service', max_digits=12, decimal_places=2, default=20)
     qrCode = serializers.CharField(source='qr_code', read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    customerId = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = Transaction
-        fields = ['transactionId', 'montantAchat', 'montantPaye', 'monnaieARendre', 'fraisService', 'qrCode', 'createdAt']
+        fields = ['transactionId', 'montantAchat', 'montantPaye', 'monnaieARendre', 'fraisService', 'qrCode', 'createdAt', 'customerId']
+
+    def validate_customerId(self, value):
+        if value is not None:
+            try:
+                customer = User.objects.get(id=value, role='customer')
+            except User.DoesNotExist:
+                raise serializers.ValidationError('Client introuvable.')
+        return value
 
     def create(self, validated_data):
         # Extract data
@@ -211,6 +231,7 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
         montant_paye = validated_data.get('montant_paye')
         monnaie_a_rendre = validated_data.get('monnaie_a_rendre') or max(montant_paye - montant_achat, 0)
         frais_service = validated_data.get('frais_service', 20)
+        customer_id = validated_data.pop('customerId', None)
         
         # Get merchant and partner from validated_data (passed via save())
         merchant = validated_data.get('merchant')
@@ -219,10 +240,15 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
         if not merchant:
             raise serializers.ValidationError('Merchant is required.')
         
+        customer = None
+        if customer_id:
+            customer = User.objects.get(id=customer_id, role='customer')
+        
         # Create transaction with all required fields
         transaction = Transaction.objects.create(
             merchant=merchant,
             partner=partner,
+            customer=customer,
             montant_achat=montant_achat,
             montant_paye=montant_paye,
             monnaie_a_rendre=monnaie_a_rendre,
@@ -231,6 +257,87 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
             qr_code=f'SMART-{uuid.uuid4().hex[:12].upper()}',
         )
         return transaction
+
+
+class PartnerServiceRequestSerializer(serializers.ModelSerializer):
+    requestId = serializers.CharField(source='request_id', read_only=True)
+    merchantName = serializers.SerializerMethodField()
+    partnerName = serializers.SerializerMethodField()
+    partnerLocationId = serializers.CharField(source='partner_location.id', allow_null=True, read_only=True)
+    partnerLocationName = serializers.CharField(source='partner_location.nom', allow_null=True, read_only=True)
+    clientIdentifier = serializers.CharField(source='client_identifier', allow_null=True)
+    montantService = serializers.DecimalField(source='montant_service', max_digits=12, decimal_places=2)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    completedAt = serializers.DateTimeField(source='completed_at', read_only=True)
+
+    class Meta:
+        model = PartnerServiceRequest
+        fields = ['requestId', 'merchantName', 'partnerName', 'partnerLocationId', 'partnerLocationName', 'clientIdentifier', 'montantService', 'commission', 'statut', 'createdAt', 'updatedAt', 'completedAt', 'note']
+
+    def get_merchantName(self, obj):
+        return f'{obj.merchant.prenom} {obj.merchant.nom}'
+
+    def get_partnerName(self, obj):
+        return f'{obj.partner.prenom} {obj.partner.nom}'
+
+
+class PartnerServiceRequestCreateSerializer(serializers.ModelSerializer):
+    partnerId = serializers.IntegerField(write_only=True)
+    partnerLocationId = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    clientIdentifier = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    customerId = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    montantService = serializers.DecimalField(source='montant_service', max_digits=12, decimal_places=2, default=25)
+    commission = serializers.DecimalField(max_digits=12, decimal_places=2, default=25)
+
+    class Meta:
+        model = PartnerServiceRequest
+        fields = ['partnerId', 'partnerLocationId', 'clientIdentifier', 'customerId', 'montantService', 'commission', 'note']
+
+    def validate_partnerId(self, value):
+        try:
+            partner = User.objects.get(id=value, role='partner', statut='actif')
+        except User.DoesNotExist:
+            raise serializers.ValidationError('Partenaire introuvable ou inactif.')
+        return value
+
+    def validate_customerId(self, value):
+        if value is not None:
+            try:
+                customer = User.objects.get(id=value, role='customer')
+            except User.DoesNotExist:
+                raise serializers.ValidationError('Client introuvable.')
+        return value
+
+    def validate_montantService(self, value):
+        if value > 250:
+            raise serializers.ValidationError('Le montant à rembourser ne doit pas dépasser 250 F CFA.')
+        if value <= 0:
+            raise serializers.ValidationError('Le montant doit être supérieur à 0.')
+        return value
+
+    def create(self, validated_data):
+        partner_id = validated_data.pop('partnerId')
+        partner_location_id = validated_data.pop('partnerLocationId', None)
+        client_identifier = validated_data.pop('clientIdentifier', '')
+        customer_id = validated_data.pop('customerId', None)
+        partner = User.objects.get(id=partner_id)
+        partner_location = None
+        if partner_location_id:
+            partner_location = Location.objects.filter(id=partner_location_id, partner=partner, statut='active').first()
+        
+        customer = None
+        if customer_id:
+            customer = User.objects.get(id=customer_id, role='customer')
+        
+        return PartnerServiceRequest.objects.create(
+            merchant=self.context['request'].user,
+            partner=partner,
+            partner_location=partner_location,
+            customer=customer,
+            client_identifier=client_identifier,
+            **validated_data
+        )
 
 
 class QRScanSerializer(serializers.Serializer):

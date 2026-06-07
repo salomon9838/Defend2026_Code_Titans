@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown, ArrowLeftRight, Users, Wallet, ArrowUpRight, Clock } from 'lucide-react';
-import { getDashboardStats, getTransactions } from '../api';
-import type { DashboardStats, Transaction } from '../types';
+import { TrendingUp, TrendingDown, ArrowLeftRight, Users, Wallet, ArrowUpRight, Clock, CheckCircle, MapPin } from 'lucide-react';
+import { getDashboardStats, getTransactions, getPartnerServiceRequests } from '../api';
+import type { DashboardStats, Transaction, PartnerServiceRequest } from '../types';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 
 const StatCard: React.FC<{ label: string; value: string; change?: number; icon: React.ReactNode; color: string }> = ({ label, value, change, icon, color }) => (
@@ -37,18 +37,31 @@ const formatPrice = (price: number): string => {
   return `${price.toLocaleString('fr')} F`;
 };
 
+const statusColors = {
+  pending: 'var(--warning)',
+  accepted: 'var(--primary)',
+  completed: 'var(--success)',
+  cancelled: 'var(--danger)'
+};
+
 const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [serviceRequests, setServiceRequests] = useState<PartnerServiceRequest[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadDashboard = async () => {
       setLoading(true);
       try {
-        const [statsData, txData] = await Promise.all([getDashboardStats(), getTransactions()]);
+        const [statsData, txData, requestsData] = await Promise.all([
+          getDashboardStats(), 
+          getTransactions(),
+          getPartnerServiceRequests()
+        ]);
         setStats(statsData);
         setTransactions(txData);
+        setServiceRequests(requestsData);
       } catch (error) {
         console.error('Impossible de charger le tableau de bord', error);
       } finally {
@@ -142,7 +155,7 @@ const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNav
       </div>
 
       {/* Recent transactions */}
-      <div className="card">
+      <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div style={{ fontWeight: 700, fontSize: 14 }}>Transactions récentes</div>
           <button className="btn btn-ghost btn-sm" onClick={() => onNavigate('history')}>
@@ -208,6 +221,47 @@ const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNav
           </div>
         </div>
       </div>
+
+      {/* Partner Service Requests */}
+      {serviceRequests.length > 0 && (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Demandes de service</div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {serviceRequests.map(request => (
+              <div key={request.requestId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, background: 'var(--bg-surface)' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>
+                    {request.partnerName || 'Partenaire'} - {request.montantService} F
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Client: {request.clientIdentifier || 'Client anonyme'}
+                  </div>
+                  {request.partnerLocationName && (
+                    <div style={{ marginTop: 2, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}>
+                      <MapPin size={12} /> {request.partnerLocationName}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, marginTop: 4, color: statusColors[request.statut as keyof typeof statusColors] }}>
+                    Statut: {
+                      request.statut === 'pending' ? 'En attente' :
+                      request.statut === 'accepted' ? 'Acceptée, en attente de validation' :
+                      request.statut === 'completed' ? 'Complétée' : 'Annulée'
+                    }
+                  </div>
+                  {request.statut === 'completed' && (
+                    <div style={{ marginTop: 6, padding: '6px 12px', background: 'var(--success-dim)', border: '1px solid var(--success)', borderRadius: 8, fontSize: 12, color: 'var(--success)' }}>
+                      <CheckCircle size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
+                      Le partenaire va vous remettre la monnaie !
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

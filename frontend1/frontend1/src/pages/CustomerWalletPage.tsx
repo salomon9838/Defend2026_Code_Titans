@@ -1,42 +1,51 @@
 import React, { useState, useEffect } from 'react';
-import { QrCode, Wallet as WalletIcon, Clock, MapPin, Plus, ChevronRight } from 'lucide-react';
+import { QrCode, Wallet as WalletIcon, Clock, MapPin, Plus, ChevronRight, RefreshCw } from 'lucide-react';
 import QRCodeLib from 'qrcode';
 import { getWallet, getTransactions } from '../api';
-import type { Wallet as WalletType } from '../types';
+import type { Wallet as WalletType, User } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 const CustomerWalletPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [wallet, setWallet] = useState<WalletType | null>(null);
   const [credits, setCredits] = useState<Array<{ ref: string; montant: number; merchant: string; expires: string; statut: string }>>([]);
   const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+
+  const fetchWallet = async () => {
+    setLoading(true);
+    try {
+      const [walletData, transactionData] = await Promise.all([getWallet(), getTransactions()]);
+      setWallet(walletData);
+      setCredits(transactionData
+        .filter(tx => tx.statut === 'validee')
+        .map(tx => ({
+          ref: tx.transactionId,
+          montant: tx.monnaieARendre,
+          merchant: tx.merchantName || 'SmartChange',
+          expires: tx.createdAt,
+          statut: 'actif',
+        })));
+    } catch (error) {
+      console.error('Impossible de charger le portefeuille client', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchWallet = async () => {
-      setLoading(true);
-      try {
-        const [walletData, transactionData] = await Promise.all([getWallet(), getTransactions()]);
-        setWallet(walletData);
-        setCredits(transactionData
-          .filter(tx => tx.statut === 'validee')
-          .map(tx => ({
-            ref: tx.transactionId,
-            montant: tx.monnaieARendre,
-            merchant: tx.merchantName || 'SmartChange',
-            expires: tx.createdAt,
-            statut: 'actif',
-          })));
-      } catch (error) {
-        console.error('Impossible de charger le portefeuille client', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchWallet();
-    QRCodeLib.toDataURL(JSON.stringify({ clientId: 'C1', nom: 'SmartChange Client', type: 'personal' }), {
-      width: 180, margin: 2, color: { dark: '#000', light: '#fff' }, errorCorrectionLevel: 'H',
-    }).then(setQrDataUrl);
-  }, []);
+    if (user) {
+      QRCodeLib.toDataURL(JSON.stringify({
+        clientId: user.id,
+        nom: `${user.prenom} ${user.nom}`,
+        telephone: user.telephone,
+        type: 'personal'
+      }), {
+        width: 180, margin: 2, color: { dark: '#000', light: '#fff' }, errorCorrectionLevel: 'H',
+      }).then(setQrDataUrl);
+    }
+  }, [user]);
 
   return (
     <div style={{ animation: 'fadeUp 0.4s ease' }}>
@@ -55,8 +64,13 @@ const CustomerWalletPage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         position: 'relative', overflow: 'hidden',
       }}>
         <div style={{ position: 'absolute', top: -30, right: -30, width: 180, height: 180, borderRadius: '50%', background: 'rgba(16,185,129,0.06)', pointerEvents: 'none' }} />
-        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <WalletIcon size={14} /> Solde total disponible
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <WalletIcon size={14} /> Solde total disponible
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={fetchWallet} style={{ color: 'rgba(255,255,255,0.7)' }}>
+            <RefreshCw size={16} /> Actualiser
+          </button>
         </div>
         <div style={{ fontFamily: 'var(--font-display)', fontSize: 44, fontWeight: 900, color: 'white' }}>
           {loading ? '...' : (wallet?.balance ?? 0).toLocaleString('fr')} <span style={{ fontSize: 20, color: 'var(--success)', fontWeight: 400 }}>F CFA</span>
@@ -82,7 +96,7 @@ const CustomerWalletPage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
               <img src={qrDataUrl} alt="QR personnel" style={{ width: 140, height: 140, display: 'block' }} />
             </div>
           )}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>ID: C1-KLOUVI-JP</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>ID: {user ? `C-${user.id}` : 'Chargement...'}</div>
         </div>
 
         {/* Stats */}
@@ -90,7 +104,7 @@ const CustomerWalletPage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
           {[
             { label: 'Crédits actifs', value: loading ? '...' : credits.length.toString(), color: 'var(--success)' },
             { label: 'Solde disponible', value: loading ? '...' : `${(wallet?.balance ?? 0).toLocaleString('fr')} F`, color: 'var(--primary)' },
-            { label: 'En attente', value: loading ? '...' : `${(wallet?.balanceEnAttente ?? 0).toLocaleString('fr')} F`, color: 'var(--warning)' },
+            { label: 'En attente', value: loading ? '...' : `${(wallet?.pendingDebt ?? 0).toLocaleString('fr')} F`, color: 'var(--warning)' },
           ].map((s, i) => (
             <div key={i} className="card" style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{s.label}</span>

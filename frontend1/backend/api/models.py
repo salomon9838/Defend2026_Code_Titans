@@ -53,12 +53,41 @@ class User(AbstractUser):
 class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet')
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    balance_en_attente = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    pending_debt = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text="Dette en attente (commissions de partenaires non payées)")
+    max_allowed_debt = models.DecimalField(max_digits=12, decimal_places=2, default=500, help_text="Dette maximale autorisée")
     revenus_generes = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f'Wallet {self.user.email}'
+
+    def add_pending_debt(self, amount):
+        """Ajoute une dette en attente. Retourne True si ok, False si dépasse la limite."""
+        if self.pending_debt + amount > self.max_allowed_debt:
+            return False
+        self.pending_debt += amount
+        self.save(update_fields=['pending_debt'])
+        return True
+
+    def add_balance_and_pay_debt(self, recharge_amount):
+        """Ajoute du solde, paye d'abord la dette, renvoie (nouveau_solde, dette_payee, solde_restant)"""
+        debt_paid = 0
+        remaining_balance = recharge_amount
+        if self.pending_debt > 0:
+            if remaining_balance >= self.pending_debt:
+                debt_paid = self.pending_debt
+                remaining_balance -= debt_paid
+                self.pending_debt = 0
+            else:
+                debt_paid = remaining_balance
+                self.pending_debt -= debt_paid
+                remaining_balance = 0
+        
+        if remaining_balance > 0:
+            self.balance += remaining_balance
+        
+        self.save(update_fields=['balance', 'pending_debt'])
+        return self.balance, debt_paid, remaining_balance
 
 
 class Transaction(models.Model):
@@ -80,10 +109,87 @@ class Transaction(models.Model):
     frais_service = models.DecimalField(max_digits=12, decimal_places=2)
     statut = models.CharField(max_length=12, choices=STATUT_CHOICES, default='en_attente')
     qr_code = models.CharField(max_length=128, blank=True)
+    settled = models.BooleanField(default=False, help_text="Indique si la transaction a été réglée (portefeuilles mis à jour)")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return self.transaction_id
+
+    def settle(self, is_partner_service: bool = False, merchant_wallet = None, partner_wallet = None):
+        """
+        Règlement de la transaction:
+        1. Ajouter monnaie_a_rendre au solde du client
+        2. Distribution des frais de service entre commerçant, partenaire et plateforme
+        3. Si is_partner_service=True: traiter comme demande de service partenaire
+        """
+        import logging
+        from decimal import Decimal
+        logger = logging.getLogger(__name__)
+
+        if self.settled or self.statut != 'validee':
+            return
+
+        merchant_wallet = merchant_wallet or getattr(self.merchant, 'wallet', None)
+        partner_wallet = partner_wallet or (getattr(self.partner, 'wallet', None) if self.partner else None)
+        client_wallet = getattr(self.customer, 'wallet', None) if self.customer else None
+        
+        # 1. Ajouter le monnaie à distribuer au solde du client (PRIORITAIRE!)
+        if client_wallet:
+            client_wallet.balance += self.monnaie_a_rendre
+            client_wallet.save(update_fields=['balance'])
+            logger.info(f"Client {self.customer.id} received {self.monnaie_a_rendre} in wallet from transaction {self.transaction_id}")
+
+        if is_partner_service:
+            # Traitement pour demande de service partenaire
+            total_a_payer = self.monnaie_a_rendre + self.frais_service
+            
+            if partner_wallet:
+                partner_wallet.balance += total_a_payer
+                partner_wallet.revenus_generes += self.frais_service
+                partner_wallet.save(update_fields=['balance', 'revenus_generes'])
+                logger.info(f"Partner {self.partner.id} settled partner service transaction {self.transaction_id}: "
+                           f"received {total_a_payer}, balance now {partner_wallet.balance}")
+
+            if merchant_wallet:
+                if merchant_wallet.balance >= total_a_payer:
+                    merchant_wallet.balance -= total_a_payer
+                else:
+                    merchant_wallet.add_pending_debt(total_a_payer)
+                merchant_wallet.save(update_fields=['balance', 'pending_debt'])
+                logger.info(f"Merchant {self.merchant.id} settled partner service transaction {self.transaction_id}: "
+                           f"deducted {total_a_payer}, balance now {merchant_wallet.balance}")
+        else:
+            # Traitement normal
+            merchant_net = max(self.monnaie_a_rendre - (self.frais_service * Decimal('0.5')), Decimal('0'))
+            partner_share = self.frais_service * Decimal('0.25')
+            merchant_service_fee = self.frais_service * Decimal('0.25')
+
+            if merchant_wallet:
+                # Ajouter la part du commerçant au solde
+                merchant_wallet.balance += merchant_net
+                
+                # Prélever automatiquement les frais de service du solde
+                if merchant_wallet.balance >= merchant_service_fee:
+                    merchant_wallet.balance -= merchant_service_fee
+                else:
+                    merchant_wallet.add_pending_debt(merchant_service_fee)
+                
+                merchant_wallet.revenus_generes += merchant_service_fee
+                merchant_wallet.save(update_fields=['balance', 'pending_debt', 'revenus_generes'])
+                
+                logger.info(f"Merchant {self.merchant.id} settled transaction {self.transaction_id}: "
+                           f"received {merchant_net}, deducted {merchant_service_fee}, balance now {merchant_wallet.balance}")
+
+            if partner_wallet:
+                partner_wallet.balance += partner_share
+                partner_wallet.revenus_generes += partner_share
+                partner_wallet.save(update_fields=['balance', 'revenus_generes'])
+                
+                logger.info(f"Partner {self.partner.id} settled transaction {self.transaction_id}: "
+                           f"received {partner_share}, balance now {partner_wallet.balance}")
+
+        self.settled = True
+        self.save(update_fields=['settled'])
 
 
 class QRCodeRecord(models.Model):
@@ -161,6 +267,39 @@ class Location(models.Model):
     
     def __str__(self):
         return f"{self.partner.nom_boutique} - {self.nom}"
+
+
+class PartnerServiceRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('accepted', 'Acceptée'),
+        ('completed', 'Complétée'),
+        ('cancelled', 'Annulée'),
+    ]
+
+    request_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    merchant = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='service_requests')
+    partner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='partner_service_requests')
+    partner_location = models.ForeignKey('Location', null=True, blank=True, on_delete=models.SET_NULL, related_name='service_requests')
+    customer = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='customer_service_requests')
+    client_identifier = models.CharField(max_length=255, blank=True)
+    montant_service = models.DecimalField(max_digits=12, decimal_places=2, default=25)
+    commission = models.DecimalField(max_digits=12, decimal_places=2, default=25)
+    statut = models.CharField(max_length=12, choices=STATUS_CHOICES, default='pending')
+    note = models.CharField(max_length=512, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['merchant', 'partner', 'statut']),
+            models.Index(fields=['request_id']),
+        ]
+
+    def __str__(self):
+        return f"Service {self.request_id} - {self.merchant.email} → {self.partner.email}"
 
 
 @receiver(post_save, sender=User)

@@ -1,28 +1,44 @@
 import React, { useEffect, useState } from 'react';
-import { Wallet, TrendingUp, Clock, ArrowUpRight, ArrowDownLeft, RefreshCw } from 'lucide-react';
-import { getWallet, getTransactions, withdrawWallet } from '../api';
+import { Wallet, TrendingUp, Clock, ArrowUpRight, ArrowDownLeft, RefreshCw, Zap } from 'lucide-react';
+import { getWallet, getTransactions, withdrawWallet, debugAddBalance } from '../api';
+import { WalletRechargeModal } from '../components/WalletRechargeModal';
 import type { Wallet as WalletType, Transaction } from '../types';
 
-const WalletPage: React.FC = () => {
+const WalletPage: React.FC<{ onNavigate?: (page: string) => void }> = ({ onNavigate }) => {
   const [wallet, setWallet] = useState<WalletType | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [withdrawing, setWithdrawing] = useState(false);
+  const [rechargeModalOpen, setRechargeModalOpen] = useState(false);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [walletData, transactionData] = await Promise.all([getWallet(), getTransactions()]);
+      setWallet(walletData);
+      setTransactions(transactionData);
+    } catch (error) {
+      console.error('Impossible de charger le portefeuille', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const [walletData, transactionData] = await Promise.all([getWallet(), getTransactions()]);
-        setWallet(walletData);
-        setTransactions(transactionData);
-      } catch (error) {
-        console.error('Impossible de charger le portefeuille', error);
-      } finally {
-        setLoading(false);
-      }
-    };
     loadData();
+
+    // Vérifier si recharge réussie après redirection depuis le backend
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('recharge_success') === 'true') {
+      const amount = params.get('amount');
+      alert(`✓ Recharge de ${amount || 'N/A'} F CFA réussie!`);
+      // Recharger les données du portefeuille
+      loadData();
+      // Nettoyer l'URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      // Fermer le modal si ouvert
+      setRechargeModalOpen(false);
+    }
   }, []);
 
   const operations = transactions.slice(0, 6).map((tx, i) => ({
@@ -70,27 +86,63 @@ const WalletPage: React.FC = () => {
         <div style={{ position: 'absolute', bottom: -60, left: 200, width: 250, height: 250, borderRadius: '50%', background: 'rgba(124,58,237,0.05)', pointerEvents: 'none' }} />
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, position: 'relative' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <Wallet size={18} style={{ color: 'var(--primary)' }} />
-              <span style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Solde disponible</span>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Wallet size={18} style={{ color: 'var(--primary)' }} />
+                <span style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Solde disponible</span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 46, fontWeight: 900, lineHeight: 1, color: 'white' }}>
+                {loading ? '...' : (wallet?.balance ?? 0).toLocaleString('fr')}
+                <span style={{ fontSize: 22, fontWeight: 400, color: 'var(--primary)', marginLeft: 8 }}>F CFA</span>
+              </div>
             </div>
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 46, fontWeight: 900, lineHeight: 1, color: 'white' }}>
-              {loading ? '...' : (wallet?.balance ?? 0).toLocaleString('fr')}
-              <span style={{ fontSize: 22, fontWeight: 400, color: 'var(--primary)', marginLeft: 8 }}>F CFA</span>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={loadData}
+                disabled={loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualiser
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={async () => {
+                  const res = await debugAddBalance(100);
+                  if (res.wallet) {
+                    setWallet(res.wallet);
+                  }
+                }}
+                disabled={loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <Zap size={14} /> +100F (DEBUG)
+              </button>
+              <button 
+                className="btn btn-primary" 
+                onClick={() => setRechargeModalOpen(true)}
+                disabled={loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <Zap size={14} /> Recharger
+              </button>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleWithdraw} 
+                disabled={loading || withdrawing}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <RefreshCw size={14} /> {withdrawing ? 'Retrait...' : 'Retirer'}
+              </button>
             </div>
           </div>
-          <button className="btn btn-primary" onClick={handleWithdraw} disabled={loading || withdrawing}>
-            <RefreshCw size={14} /> {withdrawing ? 'Retrait...' : 'Retirer'}
-          </button>
-        </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, position: 'relative' }}>
           <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '14px 16px', border: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
-              <Clock size={11} /> En attente
+              <Clock size={11} /> Dette en attente
             </div>
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700, color: 'var(--warning)' }}>{loading ? '...' : (wallet?.balanceEnAttente ?? 0).toLocaleString('fr')} F</div>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700, color: (wallet?.pendingDebt ?? 0) > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{loading ? '...' : (wallet?.pendingDebt ?? 0).toLocaleString('fr')} F</div>
           </div>
           <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '14px 16px', border: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -106,6 +158,53 @@ const WalletPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Low balance warning */}
+      {!loading && wallet && wallet.balance < 100 && (
+        <div className="card" style={{
+          marginBottom: 20,
+          borderLeft: '4px solid var(--warning)',
+          background: 'rgba(251, 191, 36, 0.05)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 250 }}>
+              <div style={{ fontWeight: 700, color: 'var(--warning)', fontSize: 14, marginBottom: 4 }}>⚠️ Solde faible ou epuisé</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Votre solde disponible est trop bas pour payer les commissions des partenaires. Rechargez votre portefeuille ou demandez l'aide d'un partenaire.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <button className="btn btn-primary btn-sm" onClick={() => setRechargeModalOpen(true)}>
+                Recharger
+              </button>
+              {onNavigate && (
+                <button className="btn btn-secondary btn-sm" onClick={() => onNavigate('geolocation')}>
+                  Trouver un partenaire
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pending debt warning */}
+      {!loading && wallet && wallet.pendingDebt > 0 && (
+        <div className="card" style={{
+          marginBottom: 20,
+          borderLeft: '4px solid var(--danger)',
+          background: 'rgba(239, 68, 68, 0.05)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 250 }}>
+              <div style={{ fontWeight: 700, color: 'var(--danger)', fontSize: 14, marginBottom: 4 }}>⚠️ Dette en attente ({wallet.pendingDebt.toLocaleString('fr')} F)</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Vous avez une dette en attente. Lorsque vous rechargerez votre portefeuille, cette dette sera automatiquement réglée d'abord.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <button className="btn btn-danger btn-sm" onClick={() => setRechargeModalOpen(true)}>
+                Régler la dette
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Commission breakdown */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
@@ -155,6 +254,14 @@ const WalletPage: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Wallet Recharge Modal */}
+      <WalletRechargeModal
+        isOpen={rechargeModalOpen}
+        onClose={() => setRechargeModalOpen(false)}
+        currentBalance={wallet?.balance ?? 0}
+        userRole="merchant"
+      />
     </div>
   );
 };

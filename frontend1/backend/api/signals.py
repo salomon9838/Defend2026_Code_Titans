@@ -2,10 +2,10 @@
 Signals for the API app to auto-seed test users on startup
 """
 import logging
-from django.db.models.signals import post_migrate
+from django.db.models.signals import post_migrate, post_save
 from django.dispatch import receiver
 from django.core.management import call_command
-from .models import User
+from .models import User, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -63,3 +63,10 @@ def create_test_users_on_migrate(sender, **kwargs):
             user.set_password(user_data['password'])
             user.save()
             logger.info(f"✓ Updated test user: {user_data['email']}")
+
+
+@receiver(post_save, sender=Transaction)
+def settle_transaction_on_validation(sender, instance, created, **kwargs):
+    """Settle transaction when it's validated"""
+    if instance.statut == 'validee' and not instance.settled:
+        instance.settle()

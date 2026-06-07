@@ -33,10 +33,22 @@ export interface PartnerShop extends User {
   horaires?: string;
 }
 
+export interface PartnerLocation {
+  id: string;
+  nom: string;
+  adresse: string;
+  latitude: number;
+  longitude: number;
+  telephone?: string;
+  horaires?: string;
+  distance?: number;
+}
+
 export interface Wallet {
   walletId: string;
   balance: number;
-  balanceEnAttente: number;
+  pendingDebt: number;
+  maxAllowedDebt: number;
   revenusGeneres: number;
   createdAt: string;
 }
@@ -77,6 +89,22 @@ export interface CommissionHistory {
   montantCommission: number;
   typeCommission: 'plateforme' | 'emetteur' | 'partenaire';
   dateCommission: string;
+}
+
+export interface PartnerServiceRequest {
+  requestId: string;
+  merchantName: string;
+  partnerName: string;
+  partnerLocationId?: string;
+  partnerLocationName?: string;
+  clientIdentifier?: string;
+  montantService: number;
+  commission: number;
+  statut: 'pending' | 'accepted' | 'completed' | 'cancelled';
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  note?: string;
 }
 
 export interface DashboardStats {

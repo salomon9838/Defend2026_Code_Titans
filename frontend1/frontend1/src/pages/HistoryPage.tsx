@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Search, Download, Eye, X, Clock } from 'lucide-react';
-import { getTransactions } from '../api';
+import { Search, Download, Eye, X, Clock, CheckCircle, Loader2 } from 'lucide-react';
+import { getTransactions, validateTransaction } from '../api';
 import type { Transaction } from '../types';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -16,19 +16,34 @@ const HistoryPage: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState('all');
   const [selected, setSelected] = useState<Transaction | null>(null);
   const [loading, setLoading] = useState(false);
+  const [validatingId, setValidatingId] = useState<string | null>(null);
+
+  const loadTransactions = async () => {
+    setLoading(true);
+    try {
+      const data = await getTransactions();
+      setTransactions(data);
+    } catch (error) {
+      console.error('Impossible de charger les transactions', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleValidate = async (transactionId: string) => {
+    setValidatingId(transactionId);
+    try {
+      await validateTransaction(transactionId);
+      await loadTransactions();
+    } catch (error) {
+      console.error('Erreur lors de la validation de la transaction', error);
+      alert('Erreur lors de la validation. Veuillez réessayer.');
+    } finally {
+      setValidatingId(null);
+    }
+  };
 
   useEffect(() => {
-    const loadTransactions = async () => {
-      setLoading(true);
-      try {
-        const data = await getTransactions();
-        setTransactions(data);
-      } catch (error) {
-        console.error('Impossible de charger les transactions', error);
-      } finally {
-        setLoading(false);
-      }
-    };
     loadTransactions();
   }, []);
 
@@ -82,8 +97,8 @@ const HistoryPage: React.FC = () => {
         {filtered.map(tx => {
           const s = statusConfig[tx.statut];
           return (
-            <div key={tx.transactionId} className="card" style={{ padding: '14px 16px', cursor: 'pointer' }} onClick={() => setSelected(tx)}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div key={tx.transactionId} className="card" style={{ padding: '14px 16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', cursor: 'pointer' }} onClick={() => setSelected(tx)}>
                 <div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--primary)', marginBottom: 3 }}>{tx.transactionId}</div>
                   <div style={{ fontWeight: 600, fontSize: 15 }}>{tx.montantAchat.toLocaleString('fr')} F <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>achat</span></div>
@@ -97,6 +112,21 @@ const HistoryPage: React.FC = () => {
                   <span style={{ padding: '2px 9px', borderRadius: 100, fontSize: 11, fontWeight: 600, background: s.bg, color: s.color }}>{s.label}</span>
                 </div>
               </div>
+              {tx.statut === 'en_attente' && (
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    onClick={() => handleValidate(tx.transactionId)}
+                    className="btn btn-success btn-full btn-sm"
+                    disabled={validatingId === tx.transactionId}
+                  >
+                    {validatingId === tx.transactionId ? (
+                      <><Loader2 size={14} className="spinner" /> Validation en cours...</>
+                    ) : (
+                      <><CheckCircle size={14} /> Valider la transaction</>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -132,7 +162,19 @@ const HistoryPage: React.FC = () => {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={10} />{new Date(tx.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
                       </td>
                       <td><span style={{ padding: '2px 8px', borderRadius: 100, fontSize: 11, fontWeight: 600, background: s.bg, color: s.color }}>{s.label}</span></td>
-                      <td><button onClick={() => setSelected(tx)} className="btn btn-ghost btn-sm" style={{ padding: '4px 8px' }}><Eye size={12} /></button></td>
+                      <td style={{ display: 'flex', gap: 4 }}>
+                        <button onClick={() => setSelected(tx)} className="btn btn-ghost btn-sm" style={{ padding: '4px 8px' }}><Eye size={12} /></button>
+                        {tx.statut === 'en_attente' && (
+                          <button
+                            onClick={() => handleValidate(tx.transactionId)}
+                            className="btn btn-success btn-sm"
+                            style={{ padding: '4px 10px' }}
+                            disabled={validatingId === tx.transactionId}
+                          >
+                            {validatingId === tx.transactionId ? <Loader2 size={12} className="spinner" /> : <CheckCircle size={12} />}
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
