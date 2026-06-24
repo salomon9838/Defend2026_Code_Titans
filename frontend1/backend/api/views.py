@@ -404,19 +404,6 @@ class TransactionListCreateView(generics.ListCreateAPIView):
             transaction.statut = 'validee'
             transaction.save(update_fields=['statut'])
             # La transaction.settle() sera appelée automatiquement par le signal post_save
-        else:
-            # Aucun client sélectionné, ajouter les parts aux wallets comme avant
-            merchant_wallet = getattr(transaction.merchant, 'wallet', None)
-            if merchant_wallet:
-                merchant_wallet.balance += merchant_share
-                merchant_wallet.revenus_generes += merchant_share
-                merchant_wallet.save(update_fields=['balance', 'revenus_generes'])
-
-            if partner and getattr(partner, 'wallet', None):
-                partner_wallet = partner.wallet
-                partner_wallet.balance += partner_share
-                partner_wallet.revenus_generes += partner_share
-                partner_wallet.save(update_fields=['balance', 'revenus_generes'])
 
         return transaction
 
@@ -1034,7 +1021,8 @@ class DebugAddBalanceView(APIView):
         wallet = getattr(request.user, 'wallet', None)
         if not wallet:
             return Response({'detail': 'Wallet introuvable.'}, status=status.HTTP_404_NOT_FOUND)
-        add_amount = request.data.get('amount', 100)
+        from decimal import Decimal
+        add_amount = Decimal(request.data.get('amount', 100))
         wallet.balance += add_amount
         wallet.save(update_fields=['balance'])
         serializer = WalletSerializer(wallet)

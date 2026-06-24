@@ -1,12 +1,16 @@
 import os
+import dj_database_url
 from datetime import timedelta
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-smartchange-backend')
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',')
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('1', 'true', 'yes')
+ALLOWED_HOSTS = os.environ.get(
+    'DJANGO_ALLOWED_HOSTS',
+    'localhost,127.0.0.1,smartchangeai-api.onrender.com'
+).split(',')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -53,16 +57,11 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend_project.wsgi.application'
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('POSTGRES_DB', 'smartchange_db'),
-        'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'sam9838*'),
-        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
-    }
+    'default': dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",  # Utilise SQLite en local si pas de variable
+        conn_max_age=600
+    )
 }
-
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -84,6 +83,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'api.User'
@@ -108,15 +108,20 @@ FADADEY_SECRET_KEY = os.environ.get('FADADEY_SECRET_KEY', 'sk_sandbox_nC8owJa_FQ
 FADADEY_API_BASE_URL = os.environ.get('FADADEY_API_BASE_URL', 'https://sandbox.fadadey.com')
 FADADEY_USE_MOCK = os.environ.get('FADADEY_USE_MOCK', 'False').lower() in ('1', 'true', 'yes')
 
-CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
+CORS_ALLOW_ALL_ORIGINS = os.environ.get('DJANGO_CORS_ALLOW_ALL_ORIGINS', 'False').lower() in ('1', 'true', 'yes')
+if not CORS_ALLOW_ALL_ORIGINS:
+    cors_allowed_origins = os.environ.get(
+        'DJANGO_CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000'
+    )
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_allowed_origins.split(',') if origin.strip()]
+else:
+    CORS_ALLOWED_ORIGINS = []
+
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r'^https?://localhost(:[0-9]+)?$',
     r'^https?://127\.0\.0\.1(:[0-9]+)?$',
+    r'^https?://.*\.vercel\.app$',
+    r'^https?://.*\.vercel\.dev$',
 ]
 CORS_ALLOW_CREDENTIALS = True

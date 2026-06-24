@@ -159,16 +159,21 @@ class Transaction(models.Model):
                 logger.info(f"Merchant {self.merchant.id} settled partner service transaction {self.transaction_id}: "
                            f"deducted {total_a_payer}, balance now {merchant_wallet.balance}")
         else:
-            # Traitement normal
-            merchant_net = max(self.monnaie_a_rendre - (self.frais_service * Decimal('0.5')), Decimal('0'))
+            # Traitement normal:
+            # Le client reçoit monnaie_a_rendre
+            # Le commerçant doit payer monnaie_a_rendre (diminuer son solde)
+            # Frais de service: répartis entre commerçant, partenaire, plateforme
             partner_share = self.frais_service * Decimal('0.25')
             merchant_service_fee = self.frais_service * Decimal('0.25')
 
             if merchant_wallet:
-                # Ajouter la part du commerçant au solde
-                merchant_wallet.balance += merchant_net
-                
-                # Prélever automatiquement les frais de service du solde
+                # Diminuer le solde du commerçant du montant à rendre
+                if merchant_wallet.balance >= self.monnaie_a_rendre:
+                    merchant_wallet.balance -= self.monnaie_a_rendre
+                else:
+                    merchant_wallet.add_pending_debt(self.monnaie_a_rendre)
+                    
+                # Prélever les frais de service du solde
                 if merchant_wallet.balance >= merchant_service_fee:
                     merchant_wallet.balance -= merchant_service_fee
                 else:
@@ -177,8 +182,7 @@ class Transaction(models.Model):
                 merchant_wallet.revenus_generes += merchant_service_fee
                 merchant_wallet.save(update_fields=['balance', 'pending_debt', 'revenus_generes'])
                 
-                logger.info(f"Merchant {self.merchant.id} settled transaction {self.transaction_id}: "
-                           f"received {merchant_net}, deducted {merchant_service_fee}, balance now {merchant_wallet.balance}")
+                logger.info(f"Merchant {self.merchant.id} settled transaction {self.transaction_id}: deducted {self.monnaie_a_rendre} + {merchant_service_fee}, balance now {merchant_wallet.balance}")
 
             if partner_wallet:
                 partner_wallet.balance += partner_share
