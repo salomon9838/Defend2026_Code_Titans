@@ -525,8 +525,9 @@ class WalletRechargeView(APIView):
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {settings.FEDAPAY_SECRET_KEY}',
             'X-Public-Key': settings.FEDAPAY_PUBLIC_KEY,
+            # Ajouter un User-Agent humain pour passer la barrière Cloudflare
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json',
-            'User-Agent': 'SmartChange/1.0 (+https://smartchangeaimoney.vercel.app)'
         }
 
         use_mock = getattr(settings, 'FEDAPAY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
