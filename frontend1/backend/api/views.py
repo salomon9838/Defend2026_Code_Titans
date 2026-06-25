@@ -525,6 +525,8 @@ class WalletRechargeView(APIView):
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {settings.FEDAPAY_SECRET_KEY}',
             'X-Public-Key': settings.FEDAPAY_PUBLIC_KEY,
+            'Accept': 'application/json',
+            'User-Agent': 'SmartChange/1.0 (+https://smartchangeaimoney.vercel.app)'
         }
 
         use_mock = getattr(settings, 'FEDAPAY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
@@ -532,7 +534,15 @@ class WalletRechargeView(APIView):
         try:
             req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
             with urllib.request.urlopen(req, timeout=25) as response:
-                response_data = json.loads(response.read().decode('utf-8'))
+                raw = response.read()
+                text = raw.decode('utf-8', errors='ignore')
+                # Detect HTML responses (Cloudflare challenge) and fallback
+                if '<!DOCTYPE html>' in text or '<html' in text.lower():
+                    logger.error(f"FedaPay returned HTML challenge or page: {text[:300]}")
+                    if use_mock:
+                        return self._build_mock_payment_response(request, montant, currency, recharge_id)
+                    return Response({'detail': 'FedaPay blocked the request (HTML challenge).'}, status=status.HTTP_502_BAD_GATEWAY)
+                response_data = json.loads(text)
         except urllib.error.HTTPError as error:
             body = error.read().decode('utf-8') if hasattr(error, 'read') else ''
             logger.error(f"FedaPay error for wallet recharge: {body}")
@@ -700,12 +710,23 @@ class PaymentInitiateView(APIView):
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {settings.FEDAPAY_SECRET_KEY}',
             'X-Public-Key': settings.FEDAPAY_PUBLIC_KEY,
+            'Accept': 'application/json',
+            'User-Agent': 'SmartChange/1.0 (+https://smartchangeaimoney.vercel.app)'
         }
+
+        use_mock = getattr(settings, 'FEDAPAY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
 
         try:
             req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
             with urllib.request.urlopen(req, timeout=25) as response:
-                response_data = json.loads(response.read().decode('utf-8'))
+                raw = response.read()
+                text = raw.decode('utf-8', errors='ignore')
+                if '<!DOCTYPE html>' in text or '<html' in text.lower():
+                    logger.error(f"FedaPay returned HTML challenge or page: {text[:300]}")
+                    if use_mock:
+                        return Response({'success': True, 'paymentUrl': request.build_absolute_uri(f'/api/payments/verify/?transactionId={transaction_id}&status=mocked'), 'reference': f'mock-{transaction_id}', 'status': 'mocked', 'mock': True})
+                    return Response({'detail': 'FedaPay blocked the request (HTML challenge).'}, status=status.HTTP_502_BAD_GATEWAY)
+                response_data = json.loads(text)
         except urllib.error.HTTPError as error:
             body = error.read().decode('utf-8') if hasattr(error, 'read') else ''
             return Response({'detail': 'Impossible de lancer le paiement.', 'error': body}, status=status.HTTP_502_BAD_GATEWAY)
