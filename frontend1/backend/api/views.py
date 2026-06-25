@@ -103,8 +103,8 @@ class APIDocsView(APIView):
                 '/api/auth/refresh/': 'POST refresh token',
                 '/api/wallet/': 'GET authenticated user wallet',
                 '/api/wallet/withdraw/': 'POST withdraw wallet balance',
-                '/api/wallet/recharge/': 'POST/GET recharge wallet via Fadapay',
-                '/api/payments/initiate/': 'POST start a Fadadey payment',
+                '/api/wallet/recharge/': 'POST/GET recharge wallet via FedaPay',
+                '/api/payments/initiate/': 'POST start a FedaPay payment',
                 '/api/transactions/': 'GET list or POST create a transaction',
                 '/api/partners/': 'GET active partners list',
                 '/api/qr/scan/': 'POST scan a QR reference',
@@ -454,7 +454,7 @@ class WalletWithdrawView(APIView):
 
 
 class WalletRechargeView(APIView):
-    """Recharger le portefeuille du commerçant via Fadapay"""
+    """Recharger le portefeuille du commerçant via FedaPay"""
     permission_classes = [permissions.IsAuthenticated]
 
     def _build_mock_payment_response(self, request, montant, currency, recharge_id):
@@ -469,7 +469,7 @@ class WalletRechargeView(APIView):
             'amount': str(montant),
             'status': 'mocked',
             'mock': True,
-            'message': 'Fadapay inaccessible. Recharge mock générée en mode debug.',
+            'message': 'FedaPay inaccessible. Recharge mock générée en mode debug.',
         })
 
     def post(self, request):
@@ -516,14 +516,18 @@ class WalletRechargeView(APIView):
             'redirect_url': request.build_absolute_uri('/api/wallet/recharge/verify/'),
         }
 
-        url = f"{settings.FADADEY_API_BASE_URL.rstrip('/')}/payments"
+        base = (getattr(settings, 'FEDAPAY_API_BASE_URL', '') or '').rstrip('/')
+        if not base:
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured('FEDAPAY_API_BASE_URL is not configured')
+        url = f"{base}/v1/payments"
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {settings.FADADEY_SECRET_KEY}',
-            'X-Public-Key': settings.FADADEY_PUBLIC_KEY,
+            'Authorization': f'Bearer {settings.FEDAPAY_SECRET_KEY}',
+            'X-Public-Key': settings.FEDAPAY_PUBLIC_KEY,
         }
 
-        use_mock = getattr(settings, 'FADADEY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
+        use_mock = getattr(settings, 'FEDAPAY_USE_MOCK', False) or getattr(settings, 'DEBUG', False)
 
         try:
             req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
@@ -531,7 +535,7 @@ class WalletRechargeView(APIView):
                 response_data = json.loads(response.read().decode('utf-8'))
         except urllib.error.HTTPError as error:
             body = error.read().decode('utf-8') if hasattr(error, 'read') else ''
-            logger.error(f"Fadapay error for wallet recharge: {body}")
+            logger.error(f"FedaPay error for wallet recharge: {body}")
             if use_mock:
                 return self._build_mock_payment_response(request, montant, currency, recharge_id)
             return Response(
@@ -539,19 +543,19 @@ class WalletRechargeView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY
             )
         except urllib.error.URLError as error:
-            logger.error(f"Connection error to Fadapay: {str(error)}")
+            logger.error(f"Connection error to FedaPay: {str(error)}")
             if use_mock:
                 return self._build_mock_payment_response(request, montant, currency, recharge_id)
             return Response(
-                {'detail': 'Erreur de connexion à Fadapay.', 'error': str(error)},
+                {'detail': 'Erreur de connexion à FedaPay.', 'error': str(error)},
                 status=status.HTTP_502_BAD_GATEWAY
             )
         except Exception as error:
-            logger.error(f"Unexpected error while connecting to Fadapay: {str(error)}")
+            logger.error(f"Unexpected error while connecting to FedaPay: {str(error)}")
             if use_mock:
                 return self._build_mock_payment_response(request, montant, currency, recharge_id)
             return Response(
-                {'detail': 'Erreur interne lors de la connexion à Fadapay.', 'error': str(error)},
+                {'detail': 'Erreur interne lors de la connexion à FedaPay.', 'error': str(error)},
                 status=status.HTTP_502_BAD_GATEWAY
             )
 
@@ -565,12 +569,12 @@ class WalletRechargeView(APIView):
         )
 
         if not payment_url:
-            logger.error(f"Fadapay response missing payment URL: {response_data}")
+            logger.error(f"FedaPay response missing payment URL: {response_data}")
             if use_mock:
                 return self._build_mock_payment_response(request, montant, currency, recharge_id)
             return Response(
                 {
-                    'detail': 'Réponse invalide de Fadapay, URL de paiement manquante.',
+                    'detail': 'Réponse invalide de FedaPay, URL de paiement manquante.',
                     'raw': response_data,
                 },
                 status=status.HTTP_502_BAD_GATEWAY
@@ -687,11 +691,15 @@ class PaymentInitiateView(APIView):
             'redirect_url': request.build_absolute_uri('/api/payments/verify/'),
         }
 
-        url = f"{settings.FADADEY_API_BASE_URL.rstrip('/')}/payments"
+        base = (getattr(settings, 'FEDAPAY_API_BASE_URL', '') or '').rstrip('/')
+        if not base:
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured('FEDAPAY_API_BASE_URL is not configured')
+        url = f"{base}/v1/payments"
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {settings.FADADEY_SECRET_KEY}',
-            'X-Public-Key': settings.FADADEY_PUBLIC_KEY,
+            'Authorization': f'Bearer {settings.FEDAPAY_SECRET_KEY}',
+            'X-Public-Key': settings.FEDAPAY_PUBLIC_KEY,
         }
 
         try:
@@ -702,7 +710,7 @@ class PaymentInitiateView(APIView):
             body = error.read().decode('utf-8') if hasattr(error, 'read') else ''
             return Response({'detail': 'Impossible de lancer le paiement.', 'error': body}, status=status.HTTP_502_BAD_GATEWAY)
         except Exception as error:
-            return Response({'detail': 'Erreur de connexion à Fadadey.', 'error': str(error)}, status=status.HTTP_502_BAD_GATEWAY)
+            return Response({'detail': 'Erreur de connexion à FedaPay.', 'error': str(error)}, status=status.HTTP_502_BAD_GATEWAY)
 
         payment_url = response_data.get('payment_url') or response_data.get('url') or response_data.get('link')
         return Response({
