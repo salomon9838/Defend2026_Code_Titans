@@ -107,6 +107,7 @@ FADADEY_PUBLIC_KEY = os.environ.get('FADADEY_PUBLIC_KEY', 'pk_sandbox_TFz2t9o5Uh
 FADADEY_SECRET_KEY = os.environ.get('FADADEY_SECRET_KEY', 'sk_sandbox_nC8owJa_FQAaQMsBhxOBRWQv')
 FADADEY_API_BASE_URL = os.environ.get('FADADEY_API_BASE_URL', 'https://sandbox.fadadey.com')
 FADADEY_USE_MOCK = os.environ.get('FADADEY_USE_MOCK', 'False').lower() in ('1', 'true', 'yes')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 
 CORS_ALLOW_ALL_ORIGINS = os.environ.get('DJANGO_CORS_ALLOW_ALL_ORIGINS', 'False').lower() in ('1', 'true', 'yes')
 if not CORS_ALLOW_ALL_ORIGINS:

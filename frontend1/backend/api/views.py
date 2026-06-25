@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from .permissions import IsAdminRole
-from .models import User, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location, PartnerServiceRequest
+from .models import User, Wallet, Transaction, QRCodeRecord, FraudReport, CommissionRecord, Location, PartnerServiceRequest
 from .serializers import (
     UserSerializer,
     PartnerSerializer,
@@ -481,7 +481,7 @@ class WalletRechargeView(APIView):
             )
 
         amount = request.data.get('amount')
-        currency = request.data.get('currency', 'XOF')
+        currency = (request.data.get('currency', 'XOF') or 'XOF').upper()
         
         if amount is None:
             return Response({'detail': 'Le montant est requis.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -498,8 +498,9 @@ class WalletRechargeView(APIView):
             return Response({'detail': 'Le montant dépasse la limite maximale.'}, status=status.HTTP_400_BAD_REQUEST)
 
         recharge_id = str(uuid.uuid4())
+        amount_to_send = int(montant) if currency in ('XOF', 'JPY', 'KRW') else int(montant * 100)
         payload = {
-            'amount': int(montant * 100),
+            'amount': amount_to_send,
             'currency': currency,
             'customer': {
                 'email': request.user.email,
@@ -554,8 +555,27 @@ class WalletRechargeView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY
             )
 
-        payment_url = response_data.get('payment_url') or response_data.get('url') or response_data.get('link')
-        
+        payment_url = (
+            response_data.get('payment_url')
+            or response_data.get('url')
+            or response_data.get('link')
+            or (response_data.get('data') or {}).get('payment_url')
+            or (response_data.get('data') or {}).get('url')
+            or (response_data.get('data') or {}).get('link')
+        )
+
+        if not payment_url:
+            logger.error(f"Fadapay response missing payment URL: {response_data}")
+            if use_mock:
+                return self._build_mock_payment_response(request, montant, currency, recharge_id)
+            return Response(
+                {
+                    'detail': 'Réponse invalide de Fadapay, URL de paiement manquante.',
+                    'raw': response_data,
+                },
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
         logger.info(f"Wallet recharge initiated for user {request.user.id}, amount: {montant}, recharge_id: {recharge_id}")
         
         return Response({
@@ -606,17 +626,20 @@ class WalletRechargeVerifyView(APIView):
         if status_value != 'success':
             return Response({'success': False, 'message': 'Recharge non complétée.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        user = None
         if request.user.is_authenticated:
             user = request.user
-        elif mock_mode:
-            user_id = request.GET.get('user_id')
-            if not user_id:
-                return Response({'detail': 'Utilisateur introuvable pour la validation mock.'}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                user = User.objects.get(id=user_id)
-            except User.DoesNotExist:
-                return Response({'detail': 'Utilisateur mock introuvable.'}, status=status.HTTP_404_NOT_FOUND)
         else:
+            user_id = request.GET.get('user_id')
+            if user_id:
+                try:
+                    user = User.objects.get(id=user_id)
+                except User.DoesNotExist:
+                    return Response({'detail': 'Utilisateur introuvable pour la validation de recharge.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not user:
+            if mock_mode:
+                return Response({'detail': 'Utilisateur introuvable pour la validation mock.'}, status=status.HTTP_400_BAD_REQUEST)
             return Response({'detail': 'Authentification requise pour valider la recharge.'}, status=status.HTTP_403_FORBIDDEN)
 
         wallet = getattr(user, 'wallet', None)
@@ -628,9 +651,8 @@ class WalletRechargeVerifyView(APIView):
         
         logger.info(f"Mock recharge validated for user {user.id}, amount: {montant}, debt_paid: {debt_paid}, recharge_id: {recharge_id}")
 
-        # Rediriger vers le frontend (page portefeuille) avec indicateur de succès
-        return redirect(f'http://localhost:5173/?tab=wallet&recharge_success=true&amount={int(montant)}')
-
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+        return redirect(f'{frontend_url}/?tab=wallet&recharge_success=true&amount={int(montant)}')
 
 class PaymentInitiateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -962,7 +984,15 @@ class SeedTestUsersView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        """Create test users for development/testing"""
+        """Create test users for development/testing - DEBUG ONLY"""
+        # Only allow in DEBUG mode
+        if not settings.DEBUG:
+            logger.error(f"⚠️ SECURITY: Unauthorized attempt to seed test users from {request.META.get('REMOTE_ADDR')}")
+            return Response(
+                {'detail': 'Cet endpoint n\'est disponible qu\'en mode développement.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         test_data = [
             {'email': 'merchant@demo.local', 'telephone': '+228 91234567', 'nom': 'Dupont', 'prenom': 'Jean', 'role': 'merchant', 'password': 'Demo123!@'},
             {'email': 'customer@demo.local', 'telephone': '+228 91234568', 'nom': 'Martin', 'prenom': 'Paul', 'role': 'customer', 'password': 'Demo123!@'},
@@ -999,6 +1029,7 @@ class SeedTestUsersView(APIView):
             if data['role'] == 'merchant' and wallet.balance < 1000:
                 wallet.balance = 1000
                 wallet.save()
+                logger.warning(f"DEBUG: Seeded merchant test user {data['email']} with 1000F (DEBUG MODE ONLY)")
         
         return Response({
             'success': True,
@@ -1013,11 +1044,19 @@ class SeedTestUsersView(APIView):
         })
 
 
+
 class DebugAddBalanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        """Add test balance to user's wallet (for development)"""
+        """Add test balance to user's wallet (for development ONLY)"""
+        # Only allow in DEBUG mode
+        if not settings.DEBUG:
+            return Response(
+                {'detail': 'Cet endpoint n\'est disponible qu\'en mode développement.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         wallet = getattr(request.user, 'wallet', None)
         if not wallet:
             return Response({'detail': 'Wallet introuvable.'}, status=status.HTTP_404_NOT_FOUND)
@@ -1026,4 +1065,5 @@ class DebugAddBalanceView(APIView):
         wallet.balance += add_amount
         wallet.save(update_fields=['balance'])
         serializer = WalletSerializer(wallet)
+        logger.warning(f"DEBUG: Added {add_amount}F to user {request.user.id} wallet (DEBUG MODE ONLY)")
         return Response({'success': True, 'message': f'Ajout de {add_amount}F au solde.', 'wallet': serializer.data})
